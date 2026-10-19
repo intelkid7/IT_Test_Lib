@@ -125,6 +125,21 @@ ul.plain li{margin:0 0 6px}
 /* case rows */
 .cases{list-style:none;margin:0;padding:0}
 .case{border-bottom:1px solid var(--line)}
+.case-row{display:grid;grid-template-columns:46px minmax(0,1fr);align-items:stretch}
+.tick{display:flex;align-items:center;justify-content:center;cursor:pointer;min-height:52px}
+.tick:hover{background:var(--sunk)}
+.tick input,.inline-done input{width:20px;height:20px;margin:0;accent-color:var(--ok);cursor:pointer}
+.inline-done{display:inline-flex;align-items:center;gap:9px;margin:0 0 12px;padding:6px 12px 6px 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface);font-weight:600;cursor:pointer}
+.case.done .ctitle b{color:var(--muted)}
+.cmeta .tested{color:var(--ok);font-weight:600}
+.progress{margin:0 0 20px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.progress h2{font-size:17px;margin:0 0 2px}
+.progress .big{font-size:16px;margin:2px 0 8px;max-width:none}
+.bar-track{height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}
+.bar-fill{height:100%;background:var(--ok);border-radius:4px}
+.progress .hint{font-size:14px;color:var(--muted);margin:8px 0 0;max-width:none}
+.progress .warn{font-size:14px;color:var(--warn);margin:8px 0 0;max-width:none}
+.progress .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .case-head{display:grid;grid-template-columns:62px minmax(0,1fr) auto;align-items:center;gap:6px 14px;width:100%;text-align:left;
   background:none;border:0;padding:13px 4px;cursor:pointer}
 .case-head:hover{background:var(--sunk)}
@@ -189,6 +204,7 @@ pre.code{margin:0;padding:14px 16px;background:var(--code-bg);border:1px solid v
   <aside class="rail" aria-label="Sections">
     <p class="brand">Italy test library</p>
     <p class="brand-sub" id="brandSub"></p>
+    <section class="progress" id="progress" aria-label="Testing progress"></section>
     <section class="parties" id="parties" aria-label="Parties"></section>
     <ul class="nav" id="navTop"></ul>
     <div class="nav-label">Test cases</div>
@@ -208,7 +224,8 @@ var DATA = JSON.parse(document.getElementById('data').textContent);
 var CASES = DATA.cases, BYID = {};
 CASES.forEach(function(c){ BYID[c.id] = c; });
 var GROUPS = DATA.groups;
-var state = { view:'overview', q:'', type:'all', pri:'all', first:false, open:{}, tab:{}, mode:{}, entity:'', bp:'', mask:true };
+var state = { view:'overview', q:'', type:'all', pri:'all', first:false, status:'all', done:{}, open:{}, tab:{}, mode:{}, entity:'', bp:'', mask:true };
+var STORE_KEY = 'it-tested-v1', storeOk = true, clearArmed = false;
 var MASTER = DATA.master, ENTBY = {}, BPBY = {};
 MASTER.ents.forEach(function(e){ ENTBY[e.name] = e; });
 MASTER.bps.forEach(function(b){ BPBY[b.code] = b; });
@@ -374,24 +391,43 @@ function changesFor(c, i){
   return out;
 }
 
+/* ---------- testing progress (ticks are saved in this browser) ---------- */
+function loadDone(){
+  try {
+    var raw = localStorage.getItem(STORE_KEY);
+    if (raw) JSON.parse(raw).forEach(function(id){ if (BYID[id]) state.done[id] = 1; });
+  } catch (e) { storeOk = false; }
+}
+function saveDone(){
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(Object.keys(state.done))); storeOk = true; } catch (e) { storeOk = false; }
+}
+function doneCount(list){ return (list || CASES).filter(function(c){ return state.done[c.id]; }).length; }
+
 /* ---------- small renderers ---------- */
 function stampHTML(s){ return '<span class="stamp ' + esc(s[1]) + '">' + esc(s[0]) + '</span>'; }
 var CERT = { sheet:'per sheet', guide:'per guides', verify:'verify on run' };
 var LAYER = { CGES:'CGES', SDI:'SDI', PA:'PA', Peppol:'Peppol' };
 var PRI = { H:'High', M:'Medium', L:'Low' };
 
+function metaInner(c){
+  return '<span class="' + (c.type === 'P' ? 't-p' : 't-n') + '">' + (c.type === 'P' ? 'Positive' : 'Negative') + '</span> · ' + PRI[c.pri] + ' priority' +
+    (c.first ? ' · <span class="fc">first cut</span>' : '') + (c.payloads.length > 1 ? ' · ' + c.payloads.length + ' payloads' : '') +
+    (state.done[c.id] ? ' · <span class="tested">tested</span>' : '');
+}
 function caseHTML(c){
-  var open = !!state.open[c.id];
-  var h = '<li class="case' + (open ? ' open' : '') + '" id="c-' + esc(c.id) + '">';
-  h += '<button class="case-head" type="button" data-act="toggle" data-id="' + esc(c.id) + '" aria-expanded="' + open + '" aria-controls="b-' + esc(c.id) + '">';
-  h += '<span class="cid">' + esc(c.id) + '</span>';
-  h += '<span class="ctitle"><b>' + esc(c.title) + '</b><span class="cmeta"><span class="' + (c.type === 'P' ? 't-p' : 't-n') + '">' + (c.type === 'P' ? 'Positive' : 'Negative') + '</span> · ' + PRI[c.pri] + ' priority' + (c.first ? ' · <span class="fc">first cut</span>' : '') + (c.payloads.length > 1 ? ' · ' + c.payloads.length + ' payloads' : '') + '</span></span>';
-  h += '<span class="cstamps">' + c.stamps.map(stampHTML).join('') + '</span></button>';
+  var open = !!state.open[c.id], dn = !!state.done[c.id], id = esc(c.id);
+  var h = '<li class="case' + (open ? ' open' : '') + (dn ? ' done' : '') + '" id="c-' + id + '"><div class="case-row">';
+  h += '<label class="tick"><input type="checkbox" data-act="done" data-id="' + id + '"' + (dn ? ' checked' : '') + ' aria-label="Mark ' + id + ' as tested"></label>';
+  h += '<button class="case-head" type="button" data-act="toggle" data-id="' + id + '" aria-expanded="' + open + '" aria-controls="b-' + id + '">';
+  h += '<span class="cid">' + id + '</span>';
+  h += '<span class="ctitle"><b>' + esc(c.title) + '</b><span class="cmeta">' + metaInner(c) + '</span></span>';
+  h += '<span class="cstamps">' + c.stamps.map(stampHTML).join('') + '</span></button></div>';
   if (open) h += caseBody(c);
   return h + '</li>';
 }
 function caseBody(c){
   var h = '<div class="case-body" id="b-' + esc(c.id) + '"><div class="col-l">';
+  h += '<label class="inline-done"><input type="checkbox" data-act="done" data-id="' + esc(c.id) + '"' + (state.done[c.id] ? ' checked' : '') + '> Tested</label>';
   h += '<h3>Scenario</h3><p>' + esc(c.scenario) + '</p>';
   h += '<h3>Rule behind it</h3><p>' + esc(c.basis) + '</p>';
   h += '<h3>Expected result</h3><ul class="exp">' + c.exp.map(function(e){
@@ -444,6 +480,8 @@ function filtered(list){
     if (state.type !== 'all' && c.type !== state.type) return false;
     if (state.pri !== 'all' && c.pri !== state.pri) return false;
     if (state.first && !c.first) return false;
+    if (state.status === 'todo' && state.done[c.id]) return false;
+    if (state.status === 'done' && !state.done[c.id]) return false;
     if (q){
       var hay = (c.id + ' ' + c.title + ' ' + c.scenario + ' ' + c.basis).toLowerCase();
       if (hay.indexOf(q) === -1) return false;
@@ -459,6 +497,8 @@ function listView(title, intro, base){
     return '<button type="button" data-act="ftype" data-v="' + x[0] + '" aria-pressed="' + (state.type === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
   h += '<div class="seg" role="group" aria-label="Priority">' + [['all','Any'],['H','High'],['M','Medium'],['L','Low']].map(function(x){
     return '<button type="button" data-act="fpri" data-v="' + x[0] + '" aria-pressed="' + (state.pri === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
+  h += '<div class="seg" role="group" aria-label="Status">' + [['all','All'],['todo','To test'],['done','Tested']].map(function(x){
+    return '<button type="button" data-act="fstatus" data-v="' + x[0] + '" aria-pressed="' + (state.status === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>';
   h += '<div class="seg" role="group" aria-label="First cut"><button type="button" data-act="ffirst" aria-pressed="' + state.first + '">First cut only</button></div>';
   h += '<span class="count" id="count">' + rows.length + ' of ' + base.length + ' cases</span></div>';
   if (!rows.length) h += '<p class="empty">No case matches these filters. Clear the search or widen the type and priority.</p>';
@@ -471,17 +511,18 @@ function overviewView(){
   var h = '<div class="wrap"><h1>Italy e-invoicing test library</h1>';
   h += '<p class="lead">' + CASES.length + ' test cases for the CGES Enriched API, each with its rule, the result to expect at every layer, and a ready payload built from the Italy Import Format.</p>';
   h += '<p>Open a case to see the payload. Compact view hides empty fields for reading; Full shape is the exact structure that passed the first import. ' + tp + ' payload tabs are included, ' + np + ' of them unique.</p>';
+  h += '<p><b>Progress.</b> ' + doneCount() + ' of ' + CASES.length + ' cases tested. Tick the box beside a case when you have tested it; the status filter then separates what is done from what is left. Ticks are saved in this browser only. <button class="link" type="button" data-act="show-todo">Show the cases still to test</button></p>';
   h += '<p>The Parties panel on the left writes a real entity and business partner from your master files into every payload, so you can run the same scenarios against any party you have onboarded. <button class="link" type="button" data-act="nav" data-v="parties">See how the fields are mapped</button></p>';
   h += '<div class="sect"><h2>Reading the outcome marks</h2><p class="muted">Every row ends with the result you should see. The first part names the layer.</p><div class="legend">' +
     [['CGES ok','ok','Import passes'],['CGES VAL0001','rej','CGES rejects the import'],['SDI RC/MC','ok','SDI accepts the file'],['SDI NS 00404','rej','SDI rejects the file'],['SDI MC','warn','Valid, but not deliverable'],['SDI ?','chk','Outcome to verify on a run'],['SDI n/a','na','Never reached']].map(function(x){
       return '<div>' + stampHTML([x[0], x[1]]) + '<span>' + x[2] + '</span></div>'; }).join('') + '</div>' +
     '<p>Each expected result also carries its footing: <b>per sheet</b> (stated in the Import Format), <b>per guides</b> (public guidance on SDI; cross-check against Allegato A, spec 1.9, before you treat a code as final) or <b>verify on run</b> (not documented, so a sandbox run decides).</p></div>';
-  h += '<div class="sect"><h2>What is in here</h2><div class="tbl"><table><thead><tr><th>Group</th><th class="num">Cases</th><th class="num">Positive</th><th class="num">Negative</th><th></th></tr></thead><tbody>' +
+  h += '<div class="sect"><h2>What is in here</h2><div class="tbl"><table><thead><tr><th>Group</th><th class="num">Cases</th><th class="num">Positive</th><th class="num">Negative</th><th class="num">Tested</th><th></th></tr></thead><tbody>' +
     GROUPS.map(function(g){
       var l = CASES.filter(function(c){ return c.group === g[0]; });
-      return '<tr><td>' + esc(g[1]) + '</td><td class="num">' + l.length + '</td><td class="num">' + l.filter(function(c){ return c.type === 'P'; }).length + '</td><td class="num">' + l.filter(function(c){ return c.type === 'N'; }).length + '</td><td><button class="link" type="button" data-act="nav" data-v="g:' + g[0] + '">Open</button></td></tr>';
+      return '<tr><td>' + esc(g[1]) + '</td><td class="num">' + l.length + '</td><td class="num">' + l.filter(function(c){ return c.type === 'P'; }).length + '</td><td class="num">' + l.filter(function(c){ return c.type === 'N'; }).length + '</td><td class="num">' + doneCount(l) + '</td><td><button class="link" type="button" data-act="nav" data-v="g:' + g[0] + '">Open</button></td></tr>';
     }).join('') +
-    '<tr><td><b>All groups</b></td><td class="num"><b>' + CASES.length + '</b></td><td class="num"><b>' + pos + '</b></td><td class="num"><b>' + neg + '</b></td><td><button class="link" type="button" data-act="nav" data-v="all">Open</button></td></tr></tbody></table></div>';
+    '<tr><td><b>All groups</b></td><td class="num"><b>' + CASES.length + '</b></td><td class="num"><b>' + pos + '</b></td><td class="num"><b>' + neg + '</b></td><td class="num"><b>' + doneCount() + '</b></td><td><button class="link" type="button" data-act="nav" data-v="all">Open</button></td></tr></tbody></table></div>';
   h += '<p style="margin-top:14px">' + fc + ' cases are marked <span class="fc">first cut</span>: the set I would run first. <button class="link" type="button" data-act="first-cut">Show only those</button></p></div>';
   h += '<div class="sect"><h2>Scope</h2><ul class="plain">' +
     '<li>Sales documents plus self-billing invoices (SBINV: TD16 to TD20) on the Enriched API (JSON). Portal UI and Excel-import cases are not covered.</li>' +
@@ -591,10 +632,10 @@ function render(){
 function renderNav(){
   var top = [['overview','Overview'],['parties','Parties and mapping'],['data','Test data'],['conv','Conventions'],['open','Points to confirm'],['sources','Sources']];
   $('#navTop').innerHTML = top.map(function(t){ return '<li><button type="button" data-act="nav" data-v="' + t[0] + '"' + (state.view === t[0] ? ' aria-current="page"' : '') + '>' + t[1] + '</button></li>'; }).join('');
-  var gs = '<li><button type="button" data-act="nav" data-v="all"' + (state.view === 'all' ? ' aria-current="page"' : '') + '><span>All cases</span><span class="n">' + CASES.length + '</span></button></li>';
+  var gs = '<li><button type="button" data-act="nav" data-v="all"' + (state.view === 'all' ? ' aria-current="page"' : '') + '><span>All cases</span><span class="n">' + doneCount() + '/' + CASES.length + '</span></button></li>';
   gs += GROUPS.map(function(g){
-    var n = CASES.filter(function(c){ return c.group === g[0]; }).length;
-    return '<li><button type="button" data-act="nav" data-v="g:' + g[0] + '"' + (state.view === 'g:' + g[0] ? ' aria-current="page"' : '') + '><span>' + esc(g[1]) + '</span><span class="n">' + n + '</span></button></li>';
+    var gl = CASES.filter(function(c){ return c.group === g[0]; });
+    return '<li><button type="button" data-act="nav" data-v="g:' + g[0] + '"' + (state.view === 'g:' + g[0] ? ' aria-current="page"' : '') + '><span>' + esc(g[1]) + '</span><span class="n">' + doneCount(gl) + '/' + gl.length + '</span></button></li>';
   }).join('');
   $('#navGroups').innerHTML = gs;
 }
@@ -629,6 +670,12 @@ document.addEventListener('click', function(e){
   else if (a === 'mode') { state.mode[id] = t.getAttribute('data-m'); refreshPayload(id); }
   else if (a === 'copy') { copyText(shown(BYID[id], state.tab[id] || 0)); }
   else if (a === 'dl') { var c = BYID[id], i = state.tab[id] || 0; download(id + (c.payloads.length > 1 ? '-' + (i + 1) : '') + '.json', fullObj(c, i)); }
+  else if (a === 'fstatus') { state.status = t.getAttribute('data-v'); render(); }
+  else if (a === 'show-todo') { state.status = 'todo'; state.first = false; state.type = 'all'; state.pri = 'all'; state.q = ''; setView('all'); }
+  else if (a === 'clear-progress') {
+    if (!clearArmed){ clearArmed = true; renderProgress(); setTimeout(function(){ clearArmed = false; renderProgress(); }, 3000); }
+    else { clearArmed = false; state.done = {}; saveDone(); render(); renderProgress(); }
+  }
   else if (a === 'ftype') { state.type = t.getAttribute('data-v'); render(); }
   else if (a === 'fpri') { state.pri = t.getAttribute('data-v'); render(); }
   else if (a === 'ffirst') { state.first = !state.first; render(); }
@@ -646,6 +693,27 @@ document.addEventListener('input', function(e){
 });
 window.addEventListener('hashchange', function(){ var id = location.hash.replace('#', ''); if (BYID[id]) openCase(id); });
 
+
+/* ---------- Progress panel and ticking ---------- */
+function renderProgress(){
+  var n = doneCount(), tot = CASES.length, pct = tot ? Math.round(n * 100 / tot) : 0;
+  var h = '<h2>Tested</h2><p class="big"><b>' + n + '</b> of ' + tot + ' cases</p>' +
+    '<div class="bar-track" role="progressbar" aria-label="Cases tested" aria-valuemin="0" aria-valuemax="' + tot + '" aria-valuenow="' + n + '"><div class="bar-fill" style="width:' + pct + '%"></div></div>';
+  h += storeOk ? '<p class="hint">Saved in this browser only.</p>' : '<p class="warn">This browser will not keep your ticks, so they reset when you close the page.</p>';
+  h += '<div class="acts"><button class="btn" type="button" data-act="show-todo">Show untested</button>' + (n ? '<button class="btn" type="button" data-act="clear-progress">' + (clearArmed ? 'Click again to clear' : 'Clear ticks') + '</button>' : '') + '</div>';
+  $('#progress').innerHTML = h;
+}
+function setDone(id, v){
+  if (v) state.done[id] = 1; else delete state.done[id];
+  saveDone();
+  var li = document.getElementById('c-' + id);
+  if (li){
+    li.classList.toggle('done', !!v);
+    Array.prototype.forEach.call(li.querySelectorAll('input[data-act="done"]'), function(i){ i.checked = !!v; });
+    var m = li.querySelector('.cmeta'); if (m) m.innerHTML = metaInner(BYID[id]);
+  }
+  renderProgress(); renderNav();
+}
 
 /* ---------- Parties panel ---------- */
 function renderParties(){
@@ -673,6 +741,7 @@ function renderParties(){
 function totalPayloads(){ var n = 0; CASES.forEach(function(c){ n += c.payloads.length; }); return n; }
 function partiesChanged(){ renderParties(); render(); }
 document.addEventListener('change', function(e){
+  if (e.target.matches && e.target.matches('input[data-act="done"]')){ setDone(e.target.getAttribute('data-id'), e.target.checked); return; }
   var id = e.target.id;
   if (id === 'selEnt'){
     state.entity = e.target.value;
@@ -695,6 +764,8 @@ $('#themeBtn').addEventListener('click', function(){
 });
 var foot = document.querySelector('.rail-foot'); var dla = document.createElement('button'); dla.className = 'btn'; dla.type = 'button'; dla.textContent = 'Download all payloads'; dla.setAttribute('data-act', 'dl-all'); foot.appendChild(dla);
 $('#brandSub').textContent = 'CGES Enriched API, ' + CASES.length + ' cases, built 15 Oct 2026';
+loadDone();
+renderProgress();
 renderParties();
 render();
 var h0 = location.hash.replace('#', ''); if (BYID[h0]) openCase(h0);
